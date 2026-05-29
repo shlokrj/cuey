@@ -14,8 +14,6 @@ from gesture import (
 )
 from spotify import next_track, pause, play, previous_track
 
-COOLDOWN = 1.5  # seconds between any two actions
-
 SWIPE_GESTURES = {GESTURE_SWIPE_LEFT, GESTURE_SWIPE_RIGHT}
 
 ACTIONS = {
@@ -36,6 +34,30 @@ LABELS = {
 
 def draw_text(frame, text, pos, color=(0, 255, 0), scale=0.75, thickness=2):
     cv2.putText(frame, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+
+
+def detect_gesture(results, swipe: SwipeDetector):
+    if not results.multi_hand_landmarks:
+        return GESTURE_NONE
+    lm = results.multi_hand_landmarks[0].landmark
+    swipe.update(lm[0].x)
+    swipe_result = swipe.detect()
+    return swipe_result if swipe_result != GESTURE_NONE else classify_static(lm)
+
+
+def get_action(detected, prev_static):
+    """Returns (label, fn) if this gesture should fire an action, else None."""
+    if detected == GESTURE_NONE:
+        return None
+    if detected not in SWIPE_GESTURES and detected == prev_static:
+        return None
+    return ACTIONS.get(detected)
+
+
+def draw_ui(frame, detected, last_action_label, last_action_time, now):
+    draw_text(frame, f"Gesture: {LABELS.get(detected, detected)}", (10, 35))
+    if last_action_label and now - last_action_time < 2.0:
+        draw_text(frame, f"-> {last_action_label}", (10, 70), color=(0, 200, 255))
 
 
 def main():
@@ -62,65 +84,29 @@ def main():
             break
 
         frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(rgb)
-
-        detected = GESTURE_NONE
+        results = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         if results.multi_hand_landmarks:
-            hand = results.multi_hand_landmarks[0]
-            mp_draw.draw_landmarks(frame, hand, mp_hands.HAND_CONNECTIONS)
-
-            lm = hand.landmark
-            swipe.update(lm[0].x)
-
-            swipe_result = swipe.detect()
-            if swipe_result != GESTURE_NONE:
-                detected = swipe_result
-            else:
-                detected = classify_static(lm)
+            mp_draw.draw_landmarks(frame, results.multi_hand_landmarks[0], mp_hands.HAND_CONNECTIONS)
         else:
             prev_static = GESTURE_NONE
 
+        detected = detect_gesture(results, swipe)
         now = time.monotonic()
-        cooled = now - last_action_time >= COOLDOWN
 
-        should_fire = (
-            detected != GESTURE_NONE
-            and cooled
-            and (detected in SWIPE_GESTURES or detected != prev_static)
-        )
-
-        if should_fire:
-            action = ACTIONS.get(detected)
-            if action:
-                label, fn = action
-                fn()
-                last_action_time = now
-                last_action_label = label
-                swipe.reset()
+        action = get_action(detected, prev_static)
+        if action:
+            label, fn = action
+            print(f"[action] {label}")
+            fn()
+            last_action_time = now
+            last_action_label = label
+            swipe.reset()
 
         if detected not in SWIPE_GESTURES:
             prev_static = detected
 
-        # --- UI ---
-        h = frame.shape[0]
-        draw_text(frame, f"Gesture: {LABELS.get(detected, detected)}", (10, 35))
-
-        elapsed = now - last_action_time
-        if last_action_label and elapsed < 2.0:
-            draw_text(frame, f"-> {last_action_label}", (10, 70), color=(0, 200, 255))
-
-        cooldown_left = COOLDOWN - (now - last_action_time)
-        if cooldown_left > 0:
-            draw_text(
-                frame,
-                f"Cooldown: {cooldown_left:.1f}s",
-                (10, h - 15),
-                color=(120, 120, 255),
-                scale=0.55,
-            )
-
+        draw_ui(frame, detected, last_action_label, last_action_time, now)
         cv2.imshow("Cuey", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
