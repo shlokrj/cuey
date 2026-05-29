@@ -1,4 +1,9 @@
+import os
 import time
+
+# Must be set before importing mediapipe to suppress absl/glog noise
+os.environ["GLOG_minloglevel"] = "2"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import cv2
 import mediapipe as mp
@@ -52,6 +57,7 @@ def main():
     hands = mp_hands.Hands(
         static_image_mode=False,
         max_num_hands=1,
+        model_complexity=0,
         min_detection_confidence=0.7,
         min_tracking_confidence=0.7,
     )
@@ -68,7 +74,8 @@ def main():
             break
 
         frame = cv2.flip(frame, 1)
-        results = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        small = cv2.resize(frame, (320, 240))
+        results = hands.process(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
 
         if results.multi_hand_landmarks:
             mp_draw.draw_landmarks(frame, results.multi_hand_landmarks[0], mp_hands.HAND_CONNECTIONS)
