@@ -1,11 +1,8 @@
-import time
-from collections import deque
-
 GESTURE_NONE = "none"
 GESTURE_OPEN_PALM = "open_palm"
 GESTURE_FIST = "fist"
-GESTURE_SWIPE_RIGHT = "swipe_right"
-GESTURE_SWIPE_LEFT = "swipe_left"
+GESTURE_THUMB_RIGHT = "thumb_right"
+GESTURE_THUMB_LEFT = "thumb_left"
 
 
 def fingers_up(lm):
@@ -21,36 +18,11 @@ def classify_static(lm):
         return GESTURE_OPEN_PALM
 
     if not index and not middle and not ring and not pinky:
+        # Thumb direction: compare tip (4) to MCP (2)
+        dx = lm[4].x - lm[2].x
+        dy = lm[4].y - lm[2].y
+        if abs(dx) > abs(dy) and abs(dx) > 0.06:
+            return GESTURE_THUMB_RIGHT if dx > 0 else GESTURE_THUMB_LEFT
         return GESTURE_FIST
 
     return GESTURE_NONE
-
-
-class SwipeDetector:
-    """Detects left/right wrist motion over a rolling time window."""
-
-    def __init__(self, window: float = 0.45, threshold: float = 0.18):
-        self._pts: deque = deque()
-        self._window = window
-        self._threshold = threshold
-
-    def update(self, x: float):
-        now = time.monotonic()
-        self._pts.append((now, x))
-        cutoff = now - self._window
-        while self._pts and self._pts[0][0] < cutoff:
-            self._pts.popleft()
-
-    def detect(self) -> str:
-        if len(self._pts) < 4:
-            return GESTURE_NONE
-        xs = [p[1] for p in self._pts]
-        delta = xs[-1] - xs[0]
-        if delta > self._threshold:
-            return GESTURE_SWIPE_RIGHT
-        if delta < -self._threshold:
-            return GESTURE_SWIPE_LEFT
-        return GESTURE_NONE
-
-    def reset(self):
-        self._pts.clear()
