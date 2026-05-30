@@ -164,6 +164,9 @@ class PointerSwipeDetector:
         motion_speed=0.55,
         motion_distance=0.08,
         motion_grace_seconds=0.25,
+        hold_repeat_seconds=1.50,
+        hold_edge_x=0.72,
+        release_edge_x=0.60,
     ):
         self.history_seconds = history_seconds
         self.min_distance = min_distance
@@ -176,22 +179,65 @@ class PointerSwipeDetector:
         self.motion_speed = motion_speed
         self.motion_distance = motion_distance
         self.motion_grace_seconds = motion_grace_seconds
+        self.hold_repeat_seconds = hold_repeat_seconds
+        self.hold_edge_x = hold_edge_x
+        self.release_edge_x = release_edge_x
         self.positions = deque()
         self.last_swipe_time = -cooldown_seconds
         self.last_motion_time = -motion_grace_seconds
+        self.hold_gesture = GESTURE_NONE
+        self.last_hold_action_time = -hold_repeat_seconds
 
     def reset(self):
         self.positions.clear()
+        self.hold_gesture = GESTURE_NONE
 
     def is_motion_active(self, now):
         return now - self.last_motion_time < self.motion_grace_seconds
 
-    def update(self, lm, now, hand_size_value=None):
-        if now - self.last_swipe_time < self.cooldown_seconds:
-            self.reset()
+    def _is_holding_edge(self, x):
+        if self.hold_gesture == GESTURE_SWIPE_RIGHT:
+            return x >= self.hold_edge_x
+        if self.hold_gesture == GESTURE_SWIPE_LEFT:
+            return x <= 1.0 - self.hold_edge_x
+        return False
+
+    def _has_left_edge(self, x):
+        if self.hold_gesture == GESTURE_SWIPE_RIGHT:
+            return x < self.release_edge_x
+        if self.hold_gesture == GESTURE_SWIPE_LEFT:
+            return x > 1.0 - self.release_edge_x
+        return True
+
+    def _held_edge_action(self, x, now):
+        if self.hold_gesture == GESTURE_NONE:
             return GESTURE_NONE
 
+        if self._has_left_edge(x):
+            self.hold_gesture = GESTURE_NONE
+            return GESTURE_NONE
+
+        if not self._is_holding_edge(x):
+            return GESTURE_NONE
+
+        if now - self.last_hold_action_time < self.hold_repeat_seconds:
+            return GESTURE_NONE
+
+        self.last_swipe_time = now
+        self.last_hold_action_time = now
+        self.positions.clear()
+        return self.hold_gesture
+
+    def update(self, lm, now, hand_size_value=None):
         tip = lm[INDEX_TIP]
+        held_action = self._held_edge_action(tip.x, now)
+        if held_action != GESTURE_NONE:
+            return held_action
+
+        if now - self.last_swipe_time < self.cooldown_seconds:
+            self.positions.clear()
+            return GESTURE_NONE
+
         self.positions.append((now, tip.x, tip.y))
 
         while self.positions and now - self.positions[0][0] > self.history_seconds:
@@ -239,9 +285,12 @@ class PointerSwipeDetector:
         if abs(dx) / horizontal_path < self.min_direction_ratio:
             return GESTURE_NONE
 
+        gesture = GESTURE_SWIPE_RIGHT if dx > 0 else GESTURE_SWIPE_LEFT
         self.last_swipe_time = now
-        self.reset()
-        return GESTURE_SWIPE_RIGHT if dx > 0 else GESTURE_SWIPE_LEFT
+        self.last_hold_action_time = now
+        self.hold_gesture = gesture
+        self.positions.clear()
+        return gesture
 
 
 class HandProximityGate:

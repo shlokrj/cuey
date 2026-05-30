@@ -54,6 +54,7 @@ HELP_LINES = [
     "Fist: Pause",
     "Swipe right: Next",
     "Swipe left: Previous",
+    "Hold edge: repeat skip",
     "Peace: Listening on/off",
     "When OFF: peace only",
     "Keep hand close",
