@@ -19,13 +19,17 @@ from gesture import (
     GESTURE_POINT,
     GESTURE_SWIPE_LEFT,
     GESTURE_SWIPE_RIGHT,
+    GESTURE_VOLUME_DOWN,
+    GESTURE_VOLUME_TOGGLE,
+    GESTURE_VOLUME_UP,
     HandProximityGate,
     PointerSwipeDetector,
     StaticGestureGate,
+    VolumeHoldDetector,
     classify_static,
     hand_size,
 )
-from spotify import next_track, pause, play, previous_track
+from spotify import next_track, pause, play, previous_track, volume_down, volume_up
 
 CALIBRATION_PATH = Path(__file__).resolve().parent / ".cuey_calibration.json"
 CALIBRATION_SECONDS = 1.6
@@ -38,6 +42,11 @@ ACTIONS = {
     GESTURE_SWIPE_LEFT:  ("Prev Track", previous_track),
 }
 
+VOLUME_ACTIONS = {
+    GESTURE_VOLUME_UP:   ("Volume Up",   volume_up),
+    GESTURE_VOLUME_DOWN: ("Volume Down", volume_down),
+}
+
 LABELS = {
     GESTURE_NONE:        "None",
     GESTURE_OPEN_PALM:   "Open Palm",
@@ -46,6 +55,9 @@ LABELS = {
     GESTURE_POINT:       "Point",
     GESTURE_SWIPE_RIGHT: "Swipe Right",
     GESTURE_SWIPE_LEFT:  "Swipe Left",
+    GESTURE_VOLUME_TOGGLE: "Volume Sign",
+    GESTURE_VOLUME_UP:   "Volume Up",
+    GESTURE_VOLUME_DOWN: "Volume Down",
 }
 
 HELP_LINES = [
@@ -55,10 +67,13 @@ HELP_LINES = [
     "Swipe right: Next",
     "Swipe left: Previous",
     "Hold edge: repeat skip",
+    "Index+pinky: volume mode",
+    "Volume mode: thumbs up/down",
     "Peace: Listening on/off",
     "When OFF: peace only",
     "Keep hand close",
     "C: calibrate distance",
+    "L: listening    V: volume",
     "H: hide help    Q: quit",
 ]
 
@@ -136,28 +151,35 @@ def apply_distance_calibration(proximity_gate, calibrated_size):
     return min_size, release_size
 
 
-def get_action(detected, listening):
+def get_action(detected, listening, volume_mode):
     if detected == GESTURE_NONE:
         return None
     if detected == GESTURE_PEACE:
         return GESTURE_PEACE  # sentinel: toggle listening
     if not listening:
         return None
+    if detected == GESTURE_VOLUME_TOGGLE:
+        return GESTURE_VOLUME_TOGGLE  # sentinel: toggle volume mode
+    if volume_mode:
+        return None
     return ACTIONS.get(detected)
 
 
-def draw_ui(frame, detected, last_action_label, last_action_time, now, listening, hand_present, hand_close):
+def draw_ui(frame, detected, last_action_label, last_action_time, now, listening, volume_mode, hand_present, hand_close):
     status = "ON" if listening else "OFF"
     status_color = (0, 255, 0) if listening else (0, 0, 255)
+    mode = "Volume" if volume_mode else "Playback"
+    mode_color = (0, 255, 255) if volume_mode else (0, 220, 0)
     draw_text(frame, f"Listening: {status}", (10, 35), color=status_color)
-    draw_text(frame, f"Gesture: {LABELS.get(detected, detected)}", (10, 70))
-    action_y = 105
+    draw_text(frame, f"Mode: {mode}", (10, 70), color=mode_color)
+    draw_text(frame, f"Gesture: {LABELS.get(detected, detected)}", (10, 105))
+    action_y = 140
     if hand_present:
         if hand_close:
-            draw_text(frame, "Distance: OK", (10, 105), color=(0, 220, 0))
+            draw_text(frame, "Distance: OK", (10, 140), color=(0, 220, 0))
         else:
-            draw_text(frame, "Move hand closer", (10, 105), color=(0, 255, 255))
-        action_y = 140
+            draw_text(frame, "Move hand closer", (10, 140), color=(0, 255, 255))
+        action_y = 175
     if last_action_label and now - last_action_time < 2.0:
         draw_text(frame, f"-> {last_action_label}", (10, action_y), color=(0, 200, 255))
 
@@ -193,11 +215,13 @@ def main():
     last_action_time = 0.0
     last_action_label = ""
     listening = True
+    volume_mode = False
     proximity_gate = HandProximityGate()
     loaded_calibration = load_calibration()
     if loaded_calibration:
         proximity_gate.set_thresholds(*loaded_calibration)
     swipe_detector = PointerSwipeDetector()
+    volume_detector = VolumeHoldDetector()
     static_gate = StaticGestureGate()
     show_help = True
     calibration_active = False
@@ -232,6 +256,7 @@ def main():
                 calibration_samples.append(hand_size_value)
                 hand_close = True
                 swipe_detector.reset()
+                volume_detector.reset()
                 static_gate.reset()
             else:
                 hand_close, hand_size_value = proximity_gate.update(landmarks)
@@ -239,19 +264,28 @@ def main():
             if not calibration_active:
                 if not hand_close:
                     swipe_detector.reset()
+                    volume_detector.reset()
                     static_gate.reset()
                 elif listening:
-                    swipe = swipe_detector.update(landmarks, now, hand_size_value)
-                    motion_blocked = swipe != GESTURE_NONE or swipe_detector.is_motion_active(now)
+                    if volume_mode:
+                        swipe = volume_detector.update(detected, now)
+                        swipe_detector.reset()
+                        motion_blocked = swipe != GESTURE_NONE
+                    else:
+                        swipe = swipe_detector.update(landmarks, now, hand_size_value)
+                        volume_detector.reset()
+                        motion_blocked = swipe != GESTURE_NONE or swipe_detector.is_motion_active(now)
                     stable_static = static_gate.update(detected, now, blocked=motion_blocked)
                 else:
                     swipe_detector.reset()
+                    volume_detector.reset()
                     wake_gesture = detected if detected == GESTURE_PEACE else GESTURE_NONE
                     stable_static = static_gate.update(wake_gesture, now)
         else:
             detected = GESTURE_NONE
             proximity_gate.reset()
             swipe_detector.reset()
+            volume_detector.reset()
             static_gate.reset()
 
         if calibration_active and now - calibration_start >= CALIBRATION_SECONDS:
@@ -267,19 +301,37 @@ def main():
             calibration_message_time = now
             calibration_samples.clear()
             swipe_detector.reset()
+            volume_detector.reset()
             static_gate.reset()
 
         if calibration_active:
             action = None
         else:
-            action = ACTIONS.get(swipe) if listening and swipe != GESTURE_NONE else None
+            if listening and swipe != GESTURE_NONE:
+                action = VOLUME_ACTIONS.get(swipe) if volume_mode else ACTIONS.get(swipe)
+            else:
+                action = None
             if action is None:
-                action = get_action(stable_static, listening)
+                action = get_action(stable_static, listening, volume_mode)
 
         if action == GESTURE_PEACE:
             listening = not listening
+            if not listening:
+                volume_mode = False
             swipe_detector.reset()
+            volume_detector.reset()
+            static_gate.reset()
+            last_action_label = f"Listening {'On' if listening else 'Off'}"
+            last_action_time = now
             print(f"[toggle] listening={listening}")
+        elif action == GESTURE_VOLUME_TOGGLE:
+            volume_mode = not volume_mode
+            swipe_detector.reset()
+            volume_detector.reset()
+            static_gate.reset()
+            last_action_label = f"Volume Mode {'On' if volume_mode else 'Off'}"
+            last_action_time = now
+            print(f"[toggle] volume_mode={volume_mode}")
         elif action:
             label, fn = action
             print(f"[action] {label}")
@@ -289,7 +341,7 @@ def main():
 
         visible_gesture = swipe if swipe != GESTURE_NONE else detected
         calibration_progress = (now - calibration_start) / CALIBRATION_SECONDS if calibration_active else 0.0
-        draw_ui(frame, visible_gesture, last_action_label, last_action_time, now, listening, hand_present, hand_close)
+        draw_ui(frame, visible_gesture, last_action_label, last_action_time, now, listening, volume_mode, hand_present, hand_close)
         draw_calibration_ui(frame, calibration_active, calibration_progress, calibration_message, calibration_message_time, now)
         if show_help:
             draw_help_panel(frame)
@@ -302,8 +354,27 @@ def main():
             calibration_message = ""
             proximity_gate.reset()
             swipe_detector.reset()
+            volume_detector.reset()
             static_gate.reset()
             print("[calibration] started")
+        if key == ord("l"):
+            listening = not listening
+            if not listening:
+                volume_mode = False
+            swipe_detector.reset()
+            volume_detector.reset()
+            static_gate.reset()
+            last_action_label = f"Listening {'On' if listening else 'Off'}"
+            last_action_time = now
+            print(f"[toggle] listening={listening}")
+        if key == ord("v") and listening:
+            volume_mode = not volume_mode
+            swipe_detector.reset()
+            volume_detector.reset()
+            static_gate.reset()
+            last_action_label = f"Volume Mode {'On' if volume_mode else 'Off'}"
+            last_action_time = now
+            print(f"[toggle] volume_mode={volume_mode}")
         if key == ord("h"):
             show_help = not show_help
         if key == ord("q"):

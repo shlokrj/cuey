@@ -9,6 +9,9 @@ GESTURE_PEACE = "peace"
 GESTURE_POINT = "point"
 GESTURE_SWIPE_RIGHT = "swipe_right"
 GESTURE_SWIPE_LEFT = "swipe_left"
+GESTURE_VOLUME_TOGGLE = "volume_toggle"
+GESTURE_VOLUME_UP = "volume_up"
+GESTURE_VOLUME_DOWN = "volume_down"
 
 INDEX_TIP = 8
 WRIST = 0
@@ -134,9 +137,49 @@ def is_peace(lm):
     return _finger_extended(lm, INDEX) and _finger_extended(lm, MIDDLE) and folded_ring_pinky and index_middle_spread
 
 
+def is_volume_toggle(lm):
+    return (
+        _finger_extended(lm, INDEX)
+        and _finger_extended(lm, PINKY)
+        and _finger_folded(lm, MIDDLE)
+        and _finger_folded(lm, RING)
+    )
+
+
+def _thumb_vertical(lm, direction):
+    scale = _palm_scale(lm)
+    thumb_tip = lm[THUMB[3]]
+    thumb_ip = lm[THUMB[2]]
+    thumb_mcp = lm[THUMB[1]]
+    dx = thumb_tip.x - thumb_mcp.x
+    dy = thumb_tip.y - thumb_mcp.y
+    if abs(dy) < 0.22 * scale or abs(dy) < abs(dx) * 1.25:
+        return False
+    if direction < 0:
+        return thumb_tip.y < thumb_ip.y < thumb_mcp.y
+    return thumb_tip.y > thumb_ip.y > thumb_mcp.y
+
+
+def is_thumb_up(lm):
+    return _thumb_extended(lm) and _thumb_vertical(lm, -1) and all(_finger_folded(lm, finger) for finger in FINGERS)
+
+
+def is_thumb_down(lm):
+    return _thumb_extended(lm) and _thumb_vertical(lm, 1) and all(_finger_folded(lm, finger) for finger in FINGERS)
+
+
 def classify_static(lm):
     if is_peace(lm):
         return GESTURE_PEACE
+
+    if is_volume_toggle(lm):
+        return GESTURE_VOLUME_TOGGLE
+
+    if is_thumb_up(lm):
+        return GESTURE_VOLUME_UP
+
+    if is_thumb_down(lm):
+        return GESTURE_VOLUME_DOWN
 
     if is_open_palm(lm):
         return GESTURE_OPEN_PALM
@@ -164,7 +207,7 @@ class PointerSwipeDetector:
         motion_speed=0.55,
         motion_distance=0.08,
         motion_grace_seconds=0.25,
-        hold_repeat_seconds=1.50,
+        hold_repeat_seconds=0.90,
         hold_edge_x=0.72,
         release_edge_x=0.60,
     ):
@@ -293,6 +336,44 @@ class PointerSwipeDetector:
         return gesture
 
 
+class VolumeHoldDetector:
+    def __init__(
+        self,
+        initial_hold_seconds=0.18,
+        repeat_seconds=0.30,
+    ):
+        self.initial_hold_seconds = initial_hold_seconds
+        self.repeat_seconds = repeat_seconds
+        self.candidate = GESTURE_NONE
+        self.candidate_since = 0.0
+        self.last_action_time = -repeat_seconds
+
+    def reset(self):
+        self.candidate = GESTURE_NONE
+        self.candidate_since = 0.0
+        self.last_action_time = -self.repeat_seconds
+
+    def update(self, gesture, now):
+        if gesture not in (GESTURE_VOLUME_UP, GESTURE_VOLUME_DOWN):
+            self.reset()
+            return GESTURE_NONE
+
+        if gesture != self.candidate:
+            self.candidate = gesture
+            self.candidate_since = now
+            self.last_action_time = -self.repeat_seconds
+            return GESTURE_NONE
+
+        if now - self.candidate_since < self.initial_hold_seconds:
+            return GESTURE_NONE
+
+        if now - self.last_action_time < self.repeat_seconds:
+            return GESTURE_NONE
+
+        self.last_action_time = now
+        return gesture
+
+
 class HandProximityGate:
     def __init__(
         self,
@@ -332,11 +413,13 @@ class StaticGestureGate:
             GESTURE_OPEN_PALM: 0.25,
             GESTURE_FIST: 0.50,
             GESTURE_PEACE: 0.75,
+            GESTURE_VOLUME_TOGGLE: 0.75,
         }
         self.cooldown_seconds = cooldown_seconds or {
             GESTURE_OPEN_PALM: 0.70,
             GESTURE_FIST: 0.70,
             GESTURE_PEACE: 1.30,
+            GESTURE_VOLUME_TOGGLE: 1.30,
         }
         self.candidate = GESTURE_NONE
         self.candidate_since = 0.0
