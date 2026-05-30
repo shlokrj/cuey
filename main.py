@@ -101,16 +101,20 @@ class _TextLayer:
     def __init__(self):
         self._q: list = []
 
-    def put(self, text: str, xy: tuple, color_rgb: tuple, size: int):
-        self._q.append((text, xy, color_rgb, size))
+    def put(self, text: str, xy: tuple, color_rgb: tuple, size: int, stroke: int = 0):
+        self._q.append((text, xy, color_rgb, size, stroke))
 
     def flush(self, frame):
         if not self._q:
             return
         pil = Image.fromarray(frame[:, :, ::-1])   # BGR -> RGB
         draw = ImageDraw.Draw(pil)
-        for text, xy, color, size in self._q:
-            draw.text(xy, text, font=_font(size), fill=color)
+        for text, xy, color, size, stroke in self._q:
+            kw: dict = {"font": _font(size), "fill": color}
+            if stroke:
+                kw["stroke_width"] = stroke
+                kw["stroke_fill"] = color
+            draw.text(xy, text, **kw)
         frame[:] = np.array(pil)[:, :, ::-1]       # RGB -> BGR
         self._q.clear()
 
@@ -118,21 +122,14 @@ class _TextLayer:
 _tl = _TextLayer()
 
 
-def draw_watermark(frame):
-    fh, fw = frame.shape[:2]
-    text = "CUEY"
-    sz = 26
-    w = _tw(text, sz)
-    _tl.put(text, (fw - w - 14, fh - sz - 12), C_DIM, sz)
-
 
 def draw_help_panel(frame):
-    PAD      = 14
-    SZ_TITLE = 22
-    SZ_SUB   = 13
-    SZ_SECT  = 13
-    SZ_ROW   = 14
-    SZ_KEY   = 13
+    PAD      = 16
+    SZ_TITLE = 28
+    SZ_SUB   = 15
+    SZ_SECT  = 15
+    SZ_ROW   = 16
+    SZ_KEY   = 14
 
     gesture_rows = [
         ("Open Palm",    "Play"),
@@ -152,8 +149,8 @@ def draw_help_panel(frame):
 
     max_row_w = max(_tw(g + "     ->  " + a, SZ_ROW) for g, a in gesture_rows)
     pw = max(
-        _tw("CUEY", SZ_TITLE),
-        _tw("gesture controller", SZ_SUB),
+        _tw("cuey", SZ_TITLE),
+        _tw("gestures & music", SZ_SUB),
         _tw("GESTURES", SZ_SECT),
         _tw("KEYS", SZ_SECT),
         max_row_w,
@@ -161,13 +158,13 @@ def draw_help_panel(frame):
     ) + PAD * 2
 
     ph = (
-        PAD + 26 + 6 + 15 + 10
+        PAD + 34 + 6 + 18 + 10
         + 1 + 10
-        + 16 + 6
-        + len(gesture_rows) * 21
+        + 18 + 6
+        + len(gesture_rows) * 24
         + 8 + 1 + 10
-        + 16 + 6
-        + len(key_rows) * 19
+        + 18 + 6
+        + len(key_rows) * 21
         + PAD
     )
 
@@ -185,32 +182,32 @@ def draw_help_panel(frame):
     tx = x1 + PAD
     y = y1 + PAD
 
-    _tl.put("CUEY", (tx, y), C_LAVENDER, SZ_TITLE)
-    y += 26 + 6
-    _tl.put("gesture controller", (tx, y), C_DIM, SZ_SUB)
-    y += 15 + 10
+    _tl.put("cuey", (tx, y), C_LAVENDER, SZ_TITLE)
+    y += 34 + 6
+    _tl.put("gestures & music", (tx, y), C_DIM, SZ_SUB)
+    y += 18 + 10
     cv2.line(frame, (x1 + PAD, y), (x2 - PAD, y), _bgr(C_BORDER), 1)
     y += 1 + 10
 
     _tl.put("GESTURES", (tx, y), C_PERIWINKLE, SZ_SECT)
-    y += 16 + 6
+    y += 18 + 6
 
     for gesture, action in gesture_rows:
         gw = _tw(gesture, SZ_ROW)
         gap = _tw("  ", SZ_ROW)
         _tl.put(gesture, (tx, y), C_LILAC, SZ_ROW)
         _tl.put("->  " + action, (tx + gw + gap, y), C_PERIWINKLE, SZ_ROW)
-        y += 21
+        y += 24
 
     y += 8
     cv2.line(frame, (x1 + PAD, y), (x2 - PAD, y), _bgr(C_BORDER), 1)
     y += 1 + 10
 
     _tl.put("KEYS", (tx, y), C_PERIWINKLE, SZ_SECT)
-    y += 16 + 6
+    y += 18 + 6
     for row in key_rows:
         _tl.put(row, (tx, y), C_DIM, SZ_KEY)
-        y += 19
+        y += 21
 
 
 def load_calibration():
@@ -261,9 +258,9 @@ def get_action(detected, listening, volume_mode):
 
 
 def draw_ui(frame, detected, last_action_label, last_action_time, now, listening, volume_mode, hand_present, hand_close):
-    PAD   = 12
-    SZ    = 15
-    ROW_H = SZ + 9
+    PAD   = 14
+    SZ    = 20
+    ROW_H = SZ + 10
 
     rows = []
     if listening:
@@ -302,16 +299,16 @@ def draw_ui(frame, detected, last_action_label, last_action_time, now, listening
 def draw_calibration_ui(frame, calibration_active, calibration_progress, calibration_message, calibration_message_time, now):
     fh, _ = frame.shape[:2]
     if calibration_active:
-        _tl.put("Calibrating: hold hand at desired distance", (10, fh - 58), C_LAVENDER, 14)
-        bx, by = 10, fh - 34
-        bw, bh = 260, 10
+        _tl.put("Calibrating: hold hand at desired distance", (10, fh - 66), C_LAVENDER, 17)
+        bx, by = 10, fh - 38
+        bw, bh = 280, 12
         filled = int(bw * max(0.0, min(calibration_progress, 1.0)))
         cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), _bgr(C_PANEL_BG), -1)
         cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), _bgr(C_BORDER), 1)
         if filled:
             cv2.rectangle(frame, (bx, by), (bx + filled, by + bh), _bgr(C_LAVENDER), -1)
     elif calibration_message and now - calibration_message_time < 3.0:
-        _tl.put(calibration_message, (10, fh - 32), C_PERIWINKLE, 14)
+        _tl.put(calibration_message, (10, fh - 36), C_PERIWINKLE, 17)
 
 
 def main():
@@ -461,7 +458,6 @@ def main():
         draw_calibration_ui(frame, calibration_active, calibration_progress, calibration_message, calibration_message_time, now)
         if show_help:
             draw_help_panel(frame)
-        draw_watermark(frame)
         _tl.flush(frame)
         cv2.imshow("Cuey", frame)
         key = cv2.waitKey(1) & 0xFF
