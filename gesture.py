@@ -18,6 +18,8 @@ MIDDLE = (9, 10, 11, 12)
 RING = (13, 14, 15, 16)
 PINKY = (17, 18, 19, 20)
 FINGERS = (INDEX, MIDDLE, RING, PINKY)
+MIN_ACTIVE_HAND_SIZE = 0.24
+RELEASE_ACTIVE_HAND_SIZE = 0.21
 
 
 def _dist(lm, a, b):
@@ -40,6 +42,15 @@ def _palm_scale(lm):
     palm_length = _dist(lm, WRIST, MIDDLE[0])
     palm_width = _dist(lm, INDEX[0], PINKY[0])
     return max(palm_length, palm_width, 0.05)
+
+
+def hand_size(lm):
+    min_x = min(point.x for point in lm)
+    max_x = max(point.x for point in lm)
+    min_y = min(point.y for point in lm)
+    max_y = max(point.y for point in lm)
+    bbox_size = max(max_x - min_x, max_y - min_y)
+    return max(bbox_size, _palm_scale(lm) * 1.8)
 
 
 def _finger_straightness(lm, joints):
@@ -143,7 +154,9 @@ class PointerSwipeDetector:
     def __init__(
         self,
         history_seconds=0.50,
-        min_distance=0.22,
+        min_distance=0.18,
+        hand_distance_ratio=0.55,
+        max_distance=0.28,
         min_speed=1.0,
         max_vertical_ratio=0.75,
         min_direction_ratio=0.70,
@@ -154,6 +167,8 @@ class PointerSwipeDetector:
     ):
         self.history_seconds = history_seconds
         self.min_distance = min_distance
+        self.hand_distance_ratio = hand_distance_ratio
+        self.max_distance = max_distance
         self.min_speed = min_speed
         self.max_vertical_ratio = max_vertical_ratio
         self.min_direction_ratio = min_direction_ratio
@@ -171,7 +186,7 @@ class PointerSwipeDetector:
     def is_motion_active(self, now):
         return now - self.last_motion_time < self.motion_grace_seconds
 
-    def update(self, lm, now):
+    def update(self, lm, now, hand_size_value=None):
         if now - self.last_swipe_time < self.cooldown_seconds:
             self.reset()
             return GESTURE_NONE
@@ -199,7 +214,14 @@ class PointerSwipeDetector:
         if total_speed >= self.motion_speed or distance >= self.motion_distance:
             self.last_motion_time = now
 
-        if abs(dx) < self.min_distance:
+        required_distance = self.min_distance
+        if hand_size_value is not None:
+            required_distance = max(
+                required_distance,
+                min(hand_size_value * self.hand_distance_ratio, self.max_distance),
+            )
+
+        if abs(dx) < required_distance:
             return GESTURE_NONE
         if speed < self.min_speed:
             return GESTURE_NONE
@@ -220,6 +242,28 @@ class PointerSwipeDetector:
         self.last_swipe_time = now
         self.reset()
         return GESTURE_SWIPE_RIGHT if dx > 0 else GESTURE_SWIPE_LEFT
+
+
+class HandProximityGate:
+    def __init__(
+        self,
+        min_size=MIN_ACTIVE_HAND_SIZE,
+        release_size=RELEASE_ACTIVE_HAND_SIZE,
+    ):
+        self.min_size = min_size
+        self.release_size = release_size
+        self.close = False
+
+    def reset(self):
+        self.close = False
+
+    def update(self, lm):
+        size = hand_size(lm)
+        if self.close:
+            self.close = size >= self.release_size
+        else:
+            self.close = size >= self.min_size
+        return self.close, size
 
 
 class StaticGestureGate:

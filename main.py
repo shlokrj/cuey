@@ -16,6 +16,7 @@ from gesture import (
     GESTURE_POINT,
     GESTURE_SWIPE_LEFT,
     GESTURE_SWIPE_RIGHT,
+    HandProximityGate,
     PointerSwipeDetector,
     StaticGestureGate,
     classify_static,
@@ -54,13 +55,17 @@ def get_action(detected, listening):
     return ACTIONS.get(detected)
 
 
-def draw_ui(frame, detected, last_action_label, last_action_time, now, listening):
+def draw_ui(frame, detected, last_action_label, last_action_time, now, listening, hand_present, hand_close):
     status = "ON" if listening else "OFF"
     status_color = (0, 255, 0) if listening else (0, 0, 255)
     draw_text(frame, f"Listening: {status}", (10, 35), color=status_color)
     draw_text(frame, f"Gesture: {LABELS.get(detected, detected)}", (10, 70))
+    action_y = 105
+    if hand_present and not hand_close:
+        draw_text(frame, "Move hand closer", (10, 105), color=(0, 255, 255))
+        action_y = 140
     if last_action_label and now - last_action_time < 2.0:
-        draw_text(frame, f"-> {last_action_label}", (10, 105), color=(0, 200, 255))
+        draw_text(frame, f"-> {last_action_label}", (10, action_y), color=(0, 200, 255))
 
 
 def main():
@@ -80,6 +85,7 @@ def main():
     last_action_time = 0.0
     last_action_label = ""
     listening = True
+    proximity_gate = HandProximityGate()
     swipe_detector = PointerSwipeDetector()
     static_gate = StaticGestureGate()
 
@@ -94,13 +100,21 @@ def main():
         results = hands.process(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
         swipe = GESTURE_NONE
         stable_static = GESTURE_NONE
+        hand_present = bool(results.multi_hand_landmarks)
+        hand_close = False
 
-        if results.multi_hand_landmarks:
+        if hand_present:
             hand_landmarks = results.multi_hand_landmarks[0]
+            landmarks = hand_landmarks.landmark
             mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-            detected = classify_static(hand_landmarks.landmark)
-            if listening:
-                swipe = swipe_detector.update(hand_landmarks.landmark, now)
+            detected = classify_static(landmarks)
+            hand_close, hand_size_value = proximity_gate.update(landmarks)
+
+            if not hand_close:
+                swipe_detector.reset()
+                static_gate.reset()
+            elif listening:
+                swipe = swipe_detector.update(landmarks, now, hand_size_value)
                 motion_blocked = swipe != GESTURE_NONE or swipe_detector.is_motion_active(now)
                 stable_static = static_gate.update(detected, now, blocked=motion_blocked)
             else:
@@ -109,6 +123,7 @@ def main():
                 stable_static = static_gate.update(wake_gesture, now)
         else:
             detected = GESTURE_NONE
+            proximity_gate.reset()
             swipe_detector.reset()
             static_gate.reset()
 
@@ -127,7 +142,7 @@ def main():
             last_action_label = label
 
         visible_gesture = swipe if swipe != GESTURE_NONE else detected
-        draw_ui(frame, visible_gesture, last_action_label, last_action_time, now, listening)
+        draw_ui(frame, visible_gesture, last_action_label, last_action_time, now, listening, hand_present, hand_close)
         cv2.imshow("Cuey", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
