@@ -101,13 +101,13 @@ def is_pointing(lm):
 def is_open_palm(lm):
     scale = _palm_scale(lm)
     palm_center = _palm_center(lm)
-    tips_clear_palm = all(_dist_to_point(lm, finger[3], palm_center) > 1.00 * scale for finger in FINGERS)
-    fingers_spread = (
-        _finger_tip_spread(lm, INDEX, MIDDLE) > 0.12
-        and _finger_tip_spread(lm, MIDDLE, RING) > 0.10
-        and _finger_tip_spread(lm, RING, PINKY) > 0.08
-    )
-    return all(_finger_extended(lm, finger) for finger in FINGERS) and _thumb_extended(lm) and tips_clear_palm and fingers_spread
+    extended = [_finger_extended(lm, finger) for finger in FINGERS]
+    clear_tips = [
+        _dist_to_point(lm, finger[3], palm_center) > 0.72 * scale
+        for finger in FINGERS
+    ]
+    tucked_count = sum(_finger_folded(lm, finger) for finger in FINGERS)
+    return sum(extended) >= 3 and sum(clear_tips) >= 3 and tucked_count <= 1
 
 
 def is_fist(lm):
@@ -229,7 +229,7 @@ class StaticGestureGate:
         cooldown_seconds=None,
     ):
         self.hold_seconds = hold_seconds or {
-            GESTURE_OPEN_PALM: 0.35,
+            GESTURE_OPEN_PALM: 0.25,
             GESTURE_FIST: 0.50,
             GESTURE_PEACE: 0.75,
         }
