@@ -4,12 +4,13 @@ from pathlib import Path
 from statistics import median
 import time
 
-# Must be set before importing mediapipe to suppress absl/glog noise
 os.environ["GLOG_minloglevel"] = "2"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import cv2
 import mediapipe as mp
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from gesture import (
     GESTURE_FIST,
@@ -48,54 +49,100 @@ VOLUME_ACTIONS = {
 }
 
 LABELS = {
-    GESTURE_NONE:        "None",
-    GESTURE_OPEN_PALM:   "Open Palm",
-    GESTURE_FIST:        "Fist",
-    GESTURE_PEACE:       "Peace",
-    GESTURE_POINT:       "Point",
-    GESTURE_SWIPE_RIGHT: "Swipe Right",
-    GESTURE_SWIPE_LEFT:  "Swipe Left",
+    GESTURE_NONE:          "None",
+    GESTURE_OPEN_PALM:     "Open Palm",
+    GESTURE_FIST:          "Fist",
+    GESTURE_PEACE:         "Peace",
+    GESTURE_POINT:         "Point",
+    GESTURE_SWIPE_RIGHT:   "Swipe Right",
+    GESTURE_SWIPE_LEFT:    "Swipe Left",
     GESTURE_VOLUME_TOGGLE: "Volume Sign",
-    GESTURE_VOLUME_UP:   "Volume Up",
-    GESTURE_VOLUME_DOWN: "Volume Down",
+    GESTURE_VOLUME_UP:     "Volume Up",
+    GESTURE_VOLUME_DOWN:   "Volume Down",
 }
 
-# ── UI palette (BGR) ──────────────────────────────────────────────────────
-C_LAVENDER   = (255, 185, 225)
-C_PERIWINKLE = (255, 180, 180)
-C_MINT       = (205, 255, 185)
-C_PINK       = (210, 182, 255)
-C_ICE        = (255, 225, 190)
-C_WHITE      = (245, 245, 255)
-C_DIM        = (200, 190, 215)
-C_PANEL_BG   = (48,  28,  58)
-C_BORDER     = (195, 140, 180)
-_FONT        = cv2.FONT_HERSHEY_DUPLEX
+# ── palette — all blues & purples, stored as RGB for PIL ─────────────────
+# cv2 calls receive these reversed (BGR) via the _bgr() helper below
+C_LAVENDER   = (210, 185, 255)   # soft lavender
+C_PERIWINKLE = (165, 160, 255)   # blue-purple periwinkle
+C_LILAC      = (230, 215, 255)   # pale lilac
+C_VIOLET     = (190, 150, 240)   # deeper violet
+C_BLUE_PURP  = (195, 210, 255)   # ice blue-lavender
+C_DIM        = (175, 165, 210)   # muted purple-grey
+C_WHITE      = (248, 244, 255)   # purple-tinted white
+C_PANEL_BG   = (22,  12,  40)    # deep purple-black (RGB)
+C_BORDER     = (140, 115, 215)   # medium purple
+
+_FONT_PATH = "/System/Library/Fonts/SFNS.ttf"
+_font_cache: dict = {}
 
 
-def draw_text(frame, text, pos, color=C_WHITE, scale=0.46, thickness=1):
-    cv2.putText(frame, text, pos, _FONT, scale, color, thickness)
+def _font(size: int) -> ImageFont.FreeTypeFont:
+    if size not in _font_cache:
+        try:
+            _font_cache[size] = ImageFont.truetype(_FONT_PATH, size)
+        except OSError:
+            _font_cache[size] = ImageFont.load_default()
+    return _font_cache[size]
+
+
+def _tw(text: str, size: int) -> int:
+    bb = _font(size).getbbox(text)
+    return bb[2] - bb[0]
+
+
+def _bgr(rgb: tuple) -> tuple:
+    return (rgb[2], rgb[1], rgb[0])
+
+
+class _TextLayer:
+    """Collects text draws and flushes all at once via PIL for clean font rendering."""
+
+    def __init__(self):
+        self._q: list = []
+
+    def put(self, text: str, xy: tuple, color_rgb: tuple, size: int):
+        self._q.append((text, xy, color_rgb, size))
+
+    def flush(self, frame):
+        if not self._q:
+            return
+        pil = Image.fromarray(frame[:, :, ::-1])   # BGR -> RGB
+        draw = ImageDraw.Draw(pil)
+        for text, xy, color, size in self._q:
+            draw.text(xy, text, font=_font(size), fill=color)
+        frame[:] = np.array(pil)[:, :, ::-1]       # RGB -> BGR
+        self._q.clear()
+
+
+_tl = _TextLayer()
+
+
+def draw_watermark(frame):
+    fh, fw = frame.shape[:2]
+    text = "CUEY"
+    sz = 26
+    w = _tw(text, sz)
+    _tl.put(text, (fw - w - 14, fh - sz - 12), C_DIM, sz)
 
 
 def draw_help_panel(frame):
-    PAD = 14
-    TH = 1
-    SZ_TITLE = 0.54
-    SZ_SUB   = 0.35
-    SZ_SECT  = 0.39
-    SZ_ROW   = 0.40
-    SZ_KEY   = 0.37
-    ROW_H    = 22
+    PAD      = 14
+    SZ_TITLE = 22
+    SZ_SUB   = 13
+    SZ_SECT  = 13
+    SZ_ROW   = 14
+    SZ_KEY   = 13
 
     gesture_rows = [
         ("Open Palm",    "Play"),
         ("Fist",         "Pause"),
         ("Swipe Right",  "Next"),
         ("Swipe Left",   "Prev"),
-        ("Hold Edge",    "Repeat skip"),
+        ("Hold Edge",    "Repeat"),
         ("Index+Pinky",  "Vol mode"),
         ("Thumbs Up/Dn", "Vol +/-"),
-        ("Peace",        "Listen toggle"),
+        ("Peace",        "Listen"),
     ]
     key_rows = [
         "C calibrate   H hide",
@@ -103,22 +150,24 @@ def draw_help_panel(frame):
         "V volume mode",
     ]
 
-    all_sized = (
-        [("CUEY", SZ_TITLE), ("gesture controller", SZ_SUB),
-         ("GESTURES", SZ_SECT), ("KEYS", SZ_SECT)]
-        + [(f"{g}    {a}", SZ_ROW) for g, a in gesture_rows]
-        + [(r, SZ_KEY) for r in key_rows]
-    )
-    pw = max(cv2.getTextSize(t, _FONT, s, TH)[0][0] for t, s in all_sized) + PAD * 2
+    max_row_w = max(_tw(g + "     ->  " + a, SZ_ROW) for g, a in gesture_rows)
+    pw = max(
+        _tw("CUEY", SZ_TITLE),
+        _tw("gesture controller", SZ_SUB),
+        _tw("GESTURES", SZ_SECT),
+        _tw("KEYS", SZ_SECT),
+        max_row_w,
+        max(_tw(r, SZ_KEY) for r in key_rows),
+    ) + PAD * 2
 
     ph = (
-        PAD + 24 + 16 + 10
-        + 2 + 10
-        + 18 + 6
-        + len(gesture_rows) * ROW_H
-        + 10 + 2 + 10
-        + 18 + 6
-        + len(key_rows) * 18
+        PAD + 26 + 6 + 15 + 10
+        + 1 + 10
+        + 16 + 6
+        + len(gesture_rows) * 21
+        + 8 + 1 + 10
+        + 16 + 6
+        + len(key_rows) * 19
         + PAD
     )
 
@@ -129,39 +178,39 @@ def draw_help_panel(frame):
     y2 = min(fh - 10, y1 + ph)
 
     ov = frame.copy()
-    cv2.rectangle(ov, (x1, y1), (x2, y2), C_PANEL_BG, -1)
-    cv2.addWeighted(ov, 0.80, frame, 0.20, 0, frame)
-    cv2.rectangle(frame, (x1, y1), (x2, y2), C_BORDER, 1)
+    cv2.rectangle(ov, (x1, y1), (x2, y2), _bgr(C_PANEL_BG), -1)
+    cv2.addWeighted(ov, 0.84, frame, 0.16, 0, frame)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), _bgr(C_BORDER), 1)
 
-    def put(text, y, color, sz):
-        cv2.putText(frame, text, (x1 + PAD, y), _FONT, sz, color, TH)
+    tx = x1 + PAD
+    y = y1 + PAD
 
-    def divider(y):
-        cv2.line(frame, (x1 + PAD, y), (x2 - PAD, y), C_BORDER, 1)
+    _tl.put("CUEY", (tx, y), C_LAVENDER, SZ_TITLE)
+    y += 26 + 6
+    _tl.put("gesture controller", (tx, y), C_DIM, SZ_SUB)
+    y += 15 + 10
+    cv2.line(frame, (x1 + PAD, y), (x2 - PAD, y), _bgr(C_BORDER), 1)
+    y += 1 + 10
 
-    y = y1 + PAD + 18
-    put("CUEY", y, C_LAVENDER, SZ_TITLE)
-    y += 16
-    put("gesture controller", y, C_DIM, SZ_SUB)
-    y += 12
-    divider(y); y += 12
+    _tl.put("GESTURES", (tx, y), C_PERIWINKLE, SZ_SECT)
+    y += 16 + 6
 
-    put("GESTURES", y, C_MINT, SZ_SECT)
-    y += 22
     for gesture, action in gesture_rows:
-        lw = cv2.getTextSize(gesture + "  ", _FONT, SZ_ROW, TH)[0][0]
-        cv2.putText(frame, gesture, (x1 + PAD, y), _FONT, SZ_ROW, C_ICE, TH)
-        cv2.putText(frame, "->  " + action, (x1 + PAD + lw, y), _FONT, SZ_ROW, C_PERIWINKLE, TH)
-        y += ROW_H
+        gw = _tw(gesture, SZ_ROW)
+        gap = _tw("  ", SZ_ROW)
+        _tl.put(gesture, (tx, y), C_LILAC, SZ_ROW)
+        _tl.put("->  " + action, (tx + gw + gap, y), C_PERIWINKLE, SZ_ROW)
+        y += 21
 
-    y += 6
-    divider(y); y += 12
+    y += 8
+    cv2.line(frame, (x1 + PAD, y), (x2 - PAD, y), _bgr(C_BORDER), 1)
+    y += 1 + 10
 
-    put("KEYS", y, C_MINT, SZ_SECT)
-    y += 22
+    _tl.put("KEYS", (tx, y), C_PERIWINKLE, SZ_SECT)
+    y += 16 + 6
     for row in key_rows:
-        put(row, y, C_DIM, SZ_KEY)
-        y += 18
+        _tl.put(row, (tx, y), C_DIM, SZ_KEY)
+        y += 19
 
 
 def load_calibration():
@@ -201,72 +250,68 @@ def get_action(detected, listening, volume_mode):
     if detected == GESTURE_NONE:
         return None
     if detected == GESTURE_PEACE:
-        return GESTURE_PEACE  # sentinel: toggle listening
+        return GESTURE_PEACE
     if not listening:
         return None
     if detected == GESTURE_VOLUME_TOGGLE:
-        return GESTURE_VOLUME_TOGGLE  # sentinel: toggle volume mode
+        return GESTURE_VOLUME_TOGGLE
     if volume_mode:
         return None
     return ACTIONS.get(detected)
 
 
 def draw_ui(frame, detected, last_action_label, last_action_time, now, listening, volume_mode, hand_present, hand_close):
-    PAD = 10
-    TH = 1
-    SZ = 0.44
-    ROW_H = 22
+    PAD   = 12
+    SZ    = 15
+    ROW_H = SZ + 9
 
     rows = []
     if listening:
-        rows.append(("  Listening  ON ", C_MINT))
+        rows.append(("Listening  ON", C_LAVENDER))
     else:
-        rows.append(("  Listening  OFF", C_PINK))
+        rows.append(("Listening  OFF", C_VIOLET))
 
-    mode_col = C_PERIWINKLE if volume_mode else C_LAVENDER
-    rows.append((f"  Mode  {'Volume' if volume_mode else 'Playback'}", mode_col))
-
-    rows.append((f"  {LABELS.get(detected, detected)}", C_WHITE))
+    mode_col = C_BLUE_PURP if volume_mode else C_LILAC
+    rows.append((f"Mode  {'Volume' if volume_mode else 'Playback'}", mode_col))
+    rows.append((LABELS.get(detected, detected), C_WHITE))
 
     if hand_present:
         if hand_close:
-            rows.append(("  Distance  OK", C_MINT))
+            rows.append(("Distance  OK", C_PERIWINKLE))
         else:
-            rows.append(("  Move closer", C_ICE))
+            rows.append(("Move closer", C_DIM))
 
     if last_action_label and now - last_action_time < 2.0:
-        rows.append((f"  -> {last_action_label}", C_PERIWINKLE))
+        rows.append((f"-> {last_action_label}", C_LAVENDER))
 
-    widths = [cv2.getTextSize(t, _FONT, SZ, TH)[0][0] for t, _ in rows]
-    pw = max(widths) + PAD * 2 if widths else 180
+    pw = max(_tw(t, SZ) for t, _ in rows) + PAD * 2 if rows else 180
     ph = len(rows) * ROW_H + PAD * 2
 
     x1, y1 = 10, 10
     x2, y2 = x1 + pw, y1 + ph
 
     ov = frame.copy()
-    cv2.rectangle(ov, (x1, y1), (x2, y2), C_PANEL_BG, -1)
-    cv2.addWeighted(ov, 0.75, frame, 0.25, 0, frame)
-    cv2.rectangle(frame, (x1, y1), (x2, y2), C_BORDER, 1)
+    cv2.rectangle(ov, (x1, y1), (x2, y2), _bgr(C_PANEL_BG), -1)
+    cv2.addWeighted(ov, 0.80, frame, 0.20, 0, frame)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), _bgr(C_BORDER), 1)
 
     for i, (text, color) in enumerate(rows):
-        y = y1 + PAD + 16 + i * ROW_H
-        cv2.putText(frame, text, (x1, y), _FONT, SZ, color, TH)
+        _tl.put(text, (x1 + PAD, y1 + PAD + i * ROW_H), color, SZ)
 
 
 def draw_calibration_ui(frame, calibration_active, calibration_progress, calibration_message, calibration_message_time, now):
     fh, _ = frame.shape[:2]
     if calibration_active:
-        cv2.putText(frame, "Calibrating: hold hand at desired distance", (10, fh - 58), _FONT, 0.44, C_LAVENDER, 1)
+        _tl.put("Calibrating: hold hand at desired distance", (10, fh - 58), C_LAVENDER, 14)
         bx, by = 10, fh - 34
         bw, bh = 260, 10
         filled = int(bw * max(0.0, min(calibration_progress, 1.0)))
-        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), C_PANEL_BG, -1)
-        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), C_BORDER, 1)
+        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), _bgr(C_PANEL_BG), -1)
+        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), _bgr(C_BORDER), 1)
         if filled:
-            cv2.rectangle(frame, (bx, by), (bx + filled, by + bh), C_LAVENDER, -1)
+            cv2.rectangle(frame, (bx, by), (bx + filled, by + bh), _bgr(C_LAVENDER), -1)
     elif calibration_message and now - calibration_message_time < 3.0:
-        cv2.putText(frame, calibration_message, (10, fh - 28), _FONT, 0.44, C_MINT, 1)
+        _tl.put(calibration_message, (10, fh - 32), C_PERIWINKLE, 14)
 
 
 def main():
@@ -416,6 +461,8 @@ def main():
         draw_calibration_ui(frame, calibration_active, calibration_progress, calibration_message, calibration_message_time, now)
         if show_help:
             draw_help_panel(frame)
+        draw_watermark(frame)
+        _tl.flush(frame)
         cv2.imshow("Cuey", frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("c"):
