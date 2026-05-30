@@ -11,32 +11,129 @@ GESTURE_SWIPE_RIGHT = "swipe_right"
 GESTURE_SWIPE_LEFT = "swipe_left"
 
 INDEX_TIP = 8
+WRIST = 0
+THUMB = (1, 2, 3, 4)
+INDEX = (5, 6, 7, 8)
+MIDDLE = (9, 10, 11, 12)
+RING = (13, 14, 15, 16)
+PINKY = (17, 18, 19, 20)
+FINGERS = (INDEX, MIDDLE, RING, PINKY)
+
+
+def _dist(lm, a, b):
+    return hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y)
+
+
+def _dist_to_point(lm, idx, point):
+    return hypot(lm[idx].x - point[0], lm[idx].y - point[1])
+
+
+def _palm_center(lm):
+    points = (WRIST, INDEX[0], MIDDLE[0], RING[0], PINKY[0])
+    return (
+        sum(lm[idx].x for idx in points) / len(points),
+        sum(lm[idx].y for idx in points) / len(points),
+    )
+
+
+def _palm_scale(lm):
+    palm_length = _dist(lm, WRIST, MIDDLE[0])
+    palm_width = _dist(lm, INDEX[0], PINKY[0])
+    return max(palm_length, palm_width, 0.05)
+
+
+def _finger_straightness(lm, joints):
+    mcp, pip, dip, tip = joints
+    path = _dist(lm, mcp, pip) + _dist(lm, pip, dip) + _dist(lm, dip, tip)
+    if path == 0:
+        return 0.0
+    return _dist(lm, mcp, tip) / path
+
+
+def _finger_extended(lm, joints):
+    mcp, pip, dip, tip = joints
+    scale = _palm_scale(lm)
+    tip_from_wrist = _dist(lm, WRIST, tip)
+    return (
+        tip_from_wrist > _dist(lm, WRIST, pip) + 0.10 * scale
+        and tip_from_wrist > _dist(lm, WRIST, mcp) + 0.30 * scale
+        and tip_from_wrist > _dist(lm, WRIST, dip) + 0.02 * scale
+        and _finger_straightness(lm, joints) > 0.72
+    )
+
+
+def _finger_folded(lm, joints):
+    _, pip, _, tip = joints
+    scale = _palm_scale(lm)
+    palm_center = _palm_center(lm)
+    tip_near_palm = _dist_to_point(lm, tip, palm_center) < 0.95 * scale
+    tip_not_past_pip = _dist(lm, WRIST, tip) < _dist(lm, WRIST, pip) + 0.08 * scale
+    return not _finger_extended(lm, joints) and (tip_near_palm or tip_not_past_pip)
+
+
+def _thumb_extended(lm):
+    scale = _palm_scale(lm)
+    palm_center = _palm_center(lm)
+    thumb_path = _dist(lm, THUMB[0], THUMB[1]) + _dist(lm, THUMB[1], THUMB[2]) + _dist(lm, THUMB[2], THUMB[3])
+    if thumb_path == 0:
+        return False
+
+    thumb_straightness = _dist(lm, THUMB[0], THUMB[3]) / thumb_path
+    return (
+        thumb_straightness > 0.68
+        and _dist_to_point(lm, THUMB[3], palm_center) > 0.70 * scale
+        and _dist(lm, THUMB[3], INDEX[0]) > 0.25 * scale
+    )
+
+
+def _finger_tip_spread(lm, left, right):
+    return _dist(lm, left[3], right[3]) / _palm_scale(lm)
 
 
 def fingers_up(lm):
-    tips = [8, 12, 16, 20]
-    pips = [6, 10, 14, 18]
-    return [lm[tip].y < lm[pip].y for tip, pip in zip(tips, pips)]
+    return [_finger_extended(lm, finger) for finger in FINGERS]
 
 
 def is_pointing(lm):
-    index, middle, ring, pinky = fingers_up(lm)
-    return index and not middle and not ring and not pinky
+    return _finger_extended(lm, INDEX) and all(_finger_folded(lm, finger) for finger in (MIDDLE, RING, PINKY))
+
+
+def is_open_palm(lm):
+    scale = _palm_scale(lm)
+    palm_center = _palm_center(lm)
+    tips_clear_palm = all(_dist_to_point(lm, finger[3], palm_center) > 1.00 * scale for finger in FINGERS)
+    fingers_spread = (
+        _finger_tip_spread(lm, INDEX, MIDDLE) > 0.12
+        and _finger_tip_spread(lm, MIDDLE, RING) > 0.10
+        and _finger_tip_spread(lm, RING, PINKY) > 0.08
+    )
+    return all(_finger_extended(lm, finger) for finger in FINGERS) and _thumb_extended(lm) and tips_clear_palm and fingers_spread
+
+
+def is_fist(lm):
+    palm_center = _palm_center(lm)
+    scale = _palm_scale(lm)
+    fingertips_tucked = all(_dist_to_point(lm, finger[3], palm_center) < 1.05 * scale for finger in FINGERS)
+    return all(_finger_folded(lm, finger) for finger in FINGERS) and fingertips_tucked
+
+
+def is_peace(lm):
+    index_middle_spread = _finger_tip_spread(lm, INDEX, MIDDLE) > 0.18
+    folded_ring_pinky = _finger_folded(lm, RING) and _finger_folded(lm, PINKY)
+    return _finger_extended(lm, INDEX) and _finger_extended(lm, MIDDLE) and folded_ring_pinky and index_middle_spread
 
 
 def classify_static(lm):
-    index, middle, ring, pinky = fingers_up(lm)
-
-    if index and middle and not ring and not pinky:
+    if is_peace(lm):
         return GESTURE_PEACE
 
-    if index and middle and ring and pinky:
+    if is_open_palm(lm):
         return GESTURE_OPEN_PALM
 
     if is_pointing(lm):
         return GESTURE_POINT
 
-    if not index and not middle and not ring and not pinky:
+    if is_fist(lm):
         return GESTURE_FIST
 
     return GESTURE_NONE
@@ -132,14 +229,14 @@ class StaticGestureGate:
         cooldown_seconds=None,
     ):
         self.hold_seconds = hold_seconds or {
-            GESTURE_OPEN_PALM: 0.30,
-            GESTURE_FIST: 0.40,
-            GESTURE_PEACE: 0.65,
+            GESTURE_OPEN_PALM: 0.35,
+            GESTURE_FIST: 0.50,
+            GESTURE_PEACE: 0.75,
         }
         self.cooldown_seconds = cooldown_seconds or {
             GESTURE_OPEN_PALM: 0.70,
             GESTURE_FIST: 0.70,
-            GESTURE_PEACE: 1.20,
+            GESTURE_PEACE: 1.30,
         }
         self.candidate = GESTURE_NONE
         self.candidate_since = 0.0

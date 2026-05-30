@@ -101,10 +101,12 @@ def main():
             detected = classify_static(hand_landmarks.landmark)
             if listening:
                 swipe = swipe_detector.update(hand_landmarks.landmark, now)
+                motion_blocked = swipe != GESTURE_NONE or swipe_detector.is_motion_active(now)
+                stable_static = static_gate.update(detected, now, blocked=motion_blocked)
             else:
                 swipe_detector.reset()
-            motion_blocked = swipe != GESTURE_NONE or swipe_detector.is_motion_active(now)
-            stable_static = static_gate.update(detected, now, blocked=motion_blocked)
+                wake_gesture = detected if detected == GESTURE_PEACE else GESTURE_NONE
+                stable_static = static_gate.update(wake_gesture, now)
         else:
             detected = GESTURE_NONE
             swipe_detector.reset()
