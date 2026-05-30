@@ -257,6 +257,13 @@ class HandProximityGate:
     def reset(self):
         self.close = False
 
+    def set_thresholds(self, min_size, release_size=None):
+        self.min_size = max(min_size, 0.05)
+        if release_size is None:
+            release_size = self.min_size * 0.85
+        self.release_size = max(min(release_size, self.min_size), 0.05)
+        self.reset()
+
     def update(self, lm):
         size = hand_size(lm)
         if self.close:
