@@ -12,19 +12,11 @@ def _run(command: str):
 
 
 def play():
-    _run("""
-tell application "Spotify"
-    if player state is paused or player state is stopped then playpause
-end tell
-""")
+    _run('tell application "Spotify" to play')
 
 
 def pause():
-    _run("""
-tell application "Spotify"
-    if player state is playing then playpause
-end tell
-""")
+    _run('tell application "Spotify" to pause')
 
 
 def next_track():

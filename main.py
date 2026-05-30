@@ -12,8 +12,12 @@ from gesture import (
     GESTURE_FIST,
     GESTURE_NONE,
     GESTURE_OPEN_PALM,
-    GESTURE_THUMB_LEFT,
-    GESTURE_THUMB_RIGHT,
+    GESTURE_PEACE,
+    GESTURE_POINT,
+    GESTURE_SWIPE_LEFT,
+    GESTURE_SWIPE_RIGHT,
+    PointerSwipeDetector,
+    StaticGestureGate,
     classify_static,
 )
 from spotify import next_track, pause, play, previous_track
@@ -21,16 +25,18 @@ from spotify import next_track, pause, play, previous_track
 ACTIONS = {
     GESTURE_OPEN_PALM:   ("Play",       play),
     GESTURE_FIST:        ("Pause",      pause),
-    GESTURE_THUMB_RIGHT: ("Next Track", next_track),
-    GESTURE_THUMB_LEFT:  ("Prev Track", previous_track),
+    GESTURE_SWIPE_RIGHT: ("Next Track", next_track),
+    GESTURE_SWIPE_LEFT:  ("Prev Track", previous_track),
 }
 
 LABELS = {
     GESTURE_NONE:        "None",
     GESTURE_OPEN_PALM:   "Open Palm",
     GESTURE_FIST:        "Fist",
-    GESTURE_THUMB_RIGHT: "Thumb Right",
-    GESTURE_THUMB_LEFT:  "Thumb Left",
+    GESTURE_PEACE:       "Peace",
+    GESTURE_POINT:       "Point",
+    GESTURE_SWIPE_RIGHT: "Swipe Right",
+    GESTURE_SWIPE_LEFT:  "Swipe Left",
 }
 
 
@@ -38,16 +44,23 @@ def draw_text(frame, text, pos, color=(0, 255, 0), scale=0.75, thickness=2):
     cv2.putText(frame, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
 
 
-def get_action(detected, prev_static):
-    if detected == GESTURE_NONE or detected == prev_static:
+def get_action(detected, listening):
+    if detected == GESTURE_NONE:
+        return None
+    if detected == GESTURE_PEACE:
+        return GESTURE_PEACE  # sentinel: toggle listening
+    if not listening:
         return None
     return ACTIONS.get(detected)
 
 
-def draw_ui(frame, detected, last_action_label, last_action_time, now):
-    draw_text(frame, f"Gesture: {LABELS.get(detected, detected)}", (10, 35))
+def draw_ui(frame, detected, last_action_label, last_action_time, now, listening):
+    status = "ON" if listening else "OFF"
+    status_color = (0, 255, 0) if listening else (0, 0, 255)
+    draw_text(frame, f"Listening: {status}", (10, 35), color=status_color)
+    draw_text(frame, f"Gesture: {LABELS.get(detected, detected)}", (10, 70))
     if last_action_label and now - last_action_time < 2.0:
-        draw_text(frame, f"-> {last_action_label}", (10, 70), color=(0, 200, 255))
+        draw_text(frame, f"-> {last_action_label}", (10, 105), color=(0, 200, 255))
 
 
 def main():
@@ -66,37 +79,53 @@ def main():
 
     last_action_time = 0.0
     last_action_label = ""
-    prev_static = GESTURE_NONE
+    listening = True
+    swipe_detector = PointerSwipeDetector()
+    static_gate = StaticGestureGate()
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
+        now = time.monotonic()
         frame = cv2.flip(frame, 1)
         small = cv2.resize(frame, (320, 240))
         results = hands.process(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
+        swipe = GESTURE_NONE
+        stable_static = GESTURE_NONE
 
         if results.multi_hand_landmarks:
-            mp_draw.draw_landmarks(frame, results.multi_hand_landmarks[0], mp_hands.HAND_CONNECTIONS)
-            detected = classify_static(results.multi_hand_landmarks[0].landmark)
+            hand_landmarks = results.multi_hand_landmarks[0]
+            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            detected = classify_static(hand_landmarks.landmark)
+            if listening:
+                swipe = swipe_detector.update(hand_landmarks.landmark, now)
+            else:
+                swipe_detector.reset()
+            motion_blocked = swipe != GESTURE_NONE or swipe_detector.is_motion_active(now)
+            stable_static = static_gate.update(detected, now, blocked=motion_blocked)
         else:
             detected = GESTURE_NONE
-            prev_static = GESTURE_NONE
+            swipe_detector.reset()
+            static_gate.reset()
 
-        now = time.monotonic()
-
-        action = get_action(detected, prev_static)
-        if action:
+        action = ACTIONS.get(swipe) if listening and swipe != GESTURE_NONE else None
+        if action is None:
+            action = get_action(stable_static, listening)
+        if action == GESTURE_PEACE:
+            listening = not listening
+            swipe_detector.reset()
+            print(f"[toggle] listening={listening}")
+        elif action:
             label, fn = action
             print(f"[action] {label}")
             fn()
             last_action_time = now
             last_action_label = label
 
-        prev_static = detected
-
-        draw_ui(frame, detected, last_action_label, last_action_time, now)
+        visible_gesture = swipe if swipe != GESTURE_NONE else detected
+        draw_ui(frame, visible_gesture, last_action_label, last_action_time, now, listening)
         cv2.imshow("Cuey", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
